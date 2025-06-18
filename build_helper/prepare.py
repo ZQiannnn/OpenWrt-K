@@ -243,16 +243,24 @@ def prepare_cfg(config: dict[str, Any],
     logger.info("%s复制本地自定义包...", cfg_name)
     local_package_path = os.path.join(paths.openwrt_k, "package")
     if os.path.exists(local_package_path):
-        for item in os.listdir(local_package_path):
-            src_path = os.path.join(local_package_path, item)
-            if os.path.isdir(src_path):
-                dst_path = os.path.join(openwrt.path, "package", item)
-                logger.info("复制本地包目录 %s 到 %s", src_path, dst_path)
-                if os.path.exists(dst_path):
-                    shutil.rmtree(dst_path)
-                shutil.copytree(src_path, dst_path, symlinks=True)
-                if os.path.isdir(os.path.join(dst_path, ".git")):
-                    shutil.rmtree(os.path.join(dst_path, ".git"))
+        for category in os.listdir(local_package_path):
+            src_category_path = os.path.join(local_package_path, category)
+            if os.path.isdir(src_category_path):
+                dst_category_path = os.path.join(openwrt.path, "package", category)
+                # 确保目标分类目录存在
+                os.makedirs(dst_category_path, exist_ok=True)
+
+                # 复制分类目录下的各个包
+                for pkg in os.listdir(src_category_path):
+                    src_pkg_path = os.path.join(src_category_path, pkg)
+                    if os.path.isdir(src_pkg_path):
+                        dst_pkg_path = os.path.join(dst_category_path, pkg)
+                        logger.info("复制本地包 %s 到 %s", src_pkg_path, dst_pkg_path)
+                        if os.path.exists(dst_pkg_path):
+                            shutil.rmtree(dst_pkg_path)
+                        shutil.copytree(src_pkg_path, dst_pkg_path, symlinks=True)
+                        if os.path.isdir(os.path.join(dst_pkg_path, ".git")):
+                            shutil.rmtree(os.path.join(dst_pkg_path, ".git"))
 
     # 替换golang版本
     golang_path = os.path.join(openwrt.path, "feeds", "packages", "lang", "golang")
