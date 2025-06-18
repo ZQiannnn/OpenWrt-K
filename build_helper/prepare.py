@@ -239,21 +239,6 @@ def prepare_cfg(config: dict[str, Any],
         if os.path.isdir(os.path.join(path, ".git")):
             shutil.rmtree(os.path.join(path, ".git"))
 
-    # 复制本地自定义包
-    logger.info("%s复制本地自定义包...", cfg_name)
-    local_package_path = os.path.join(paths.openwrt_k, "package")
-    if os.path.exists(local_package_path):
-        for item in os.listdir(local_package_path):
-            src_path = os.path.join(local_package_path, item)
-            if os.path.isdir(src_path):
-                dst_path = os.path.join(openwrt.path, "package", item)
-                logger.info("复制本地包目录 %s 到 %s", src_path, dst_path)
-                if os.path.exists(dst_path):
-                    shutil.rmtree(dst_path)
-                shutil.copytree(src_path, dst_path, symlinks=True)
-                if os.path.isdir(os.path.join(dst_path, ".git")):
-                    shutil.rmtree(os.path.join(dst_path, ".git"))
-
     # 替换golang版本
     golang_path = os.path.join(openwrt.path, "feeds", "packages", "lang", "golang")
     shutil.rmtree(golang_path)
