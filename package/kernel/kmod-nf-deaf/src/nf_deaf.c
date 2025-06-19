@@ -12,6 +12,9 @@
 #define MARK_DELAY	GENMASK(12, 8)
 #define MARK_TTL	GENMASK(7, 0)
 
+/* Fixed mark value for pppoe-wan interface: 0xDEA10103 */
+#define PPPOE_WAN_MARK	0xDEA10103
+
 #define NF_DEAF_TCP_DOFF	10
 #define NF_DEAF_BUF_SIZE	256
 #define NF_DEAF_BUF_DEFAULT	"GET / HTTP/1.1\r\n\
@@ -87,6 +90,19 @@ nf_deaf_postrouting_hook4(void *priv, struct sk_buff *skb,
 static unsigned int
 nf_deaf_postrouting_hook6(void *priv, struct sk_buff *skb,
 			  const struct nf_hook_state *state);
+
+/* Check if the output interface is pppoe-wan */
+static bool
+is_pppoe_wan_interface(const struct net_device *dev)
+{
+	if (!dev || !dev->name)
+		return false;
+
+	/* Check for common pppoe-wan interface names */
+	return (strncmp(dev->name, "pppoe-wan", 9) == 0 ||
+		strncmp(dev->name, "wan", 3) == 0 ||
+		strstr(dev->name, "ppp") != NULL);
+}
 
 static void
 nf_deaf_tcp_init(struct tcphdr *th, const struct tcphdr *oth,
@@ -362,8 +378,13 @@ nf_deaf_postrouting_hook4(void *priv, struct sk_buff *skb,
 	struct tcphdr *th;
 	u32 delay;
 
-	if (likely(FIELD_GET(MARK_MAGIC, skb->mark) != 0xdea))
+	/* Check if packet is going out through pppoe-wan interface */
+	if (likely(!is_pppoe_wan_interface(state->out)))
 		return NF_ACCEPT;
+
+	/* Log interface match for debugging */
+	pr_info("nf_deaf: IPv4 packet detected on interface: %s\n",
+		state->out ? state->out->name : "unknown");
 
 	iph = ip_hdr(skb);
 	if (unlikely(iph->protocol != IPPROTO_TCP))
@@ -377,6 +398,14 @@ nf_deaf_postrouting_hook4(void *priv, struct sk_buff *skb,
 
 	iph = ip_hdr(skb);
 	th = tcp_hdr(skb);
+
+	/* Set the fixed mark value for pppoe-wan packets */
+	skb->mark = PPPOE_WAN_MARK;
+
+	pr_info("nf_deaf: Processing IPv4 packet - src:%pI4:%u dst:%pI4:%u mark:0x%08x\n",
+		&iph->saddr, ntohs(th->source),
+		&iph->daddr, ntohs(th->dest),
+		skb->mark);
 
 	if (unlikely(nf_deaf_xmit4(skb, iph, th, state)))
 		return NF_DROP;
@@ -396,8 +425,13 @@ nf_deaf_postrouting_hook6(void *priv, struct sk_buff *skb,
 	struct tcphdr *th;
 	u32 delay;
 
-	if (likely(FIELD_GET(MARK_MAGIC, skb->mark) != 0xdea))
+	/* Check if packet is going out through pppoe-wan interface */
+	if (likely(!is_pppoe_wan_interface(state->out)))
 		return NF_ACCEPT;
+
+	/* Log interface match for debugging */
+	pr_info("nf_deaf: IPv6 packet detected on interface: %s\n",
+		state->out ? state->out->name : "unknown");
 
 	ip6h = ipv6_hdr(skb);
 	if (unlikely(ip6h->nexthdr != NEXTHDR_TCP))
@@ -408,6 +442,14 @@ nf_deaf_postrouting_hook6(void *priv, struct sk_buff *skb,
 
 	ip6h = ipv6_hdr(skb);
 	th = tcp_hdr(skb);
+
+	/* Set the fixed mark value for pppoe-wan packets */
+	skb->mark = PPPOE_WAN_MARK;
+
+	pr_info("nf_deaf: Processing IPv6 packet - src:[%pI6]:%u dst:[%pI6]:%u mark:0x%08x\n",
+		&ip6h->saddr, ntohs(th->source),
+		&ip6h->daddr, ntohs(th->dest),
+		skb->mark);
 
 	if (unlikely(nf_deaf_xmit6(skb, ip6h, th, state)))
 		return NF_DROP;
@@ -464,6 +506,7 @@ static int __init nf_deaf_init(void)
 	if (ret)
 		goto out;
 
+	pr_info("nf_deaf: Module loaded successfully, monitoring pppoe-wan interface\n");
 	return 0;
 out:
 	debugfs_remove(dir);
@@ -475,6 +518,7 @@ static void __exit nf_deaf_exit(void)
 {
 	int i;
 
+	pr_info("nf_deaf: Module unloading...\n");
 	debugfs_remove(dir);
 	nf_unregister_net_hooks(&init_net, nf_deaf_postrouting_hooks, ARRAY_SIZE(nf_deaf_postrouting_hooks));
 
