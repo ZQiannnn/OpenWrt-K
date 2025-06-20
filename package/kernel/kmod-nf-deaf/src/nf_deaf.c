@@ -24,12 +24,22 @@ static bool config_corrupt_ackseq = false; /* Use wrong ACK SEQ */
 static bool config_corrupt_chksum = false; /* Use wrong TCP checksum */
 
 #define NF_DEAF_TCP_DOFF	10
-#define NF_DEAF_BUF_SIZE	256
-#define NF_DEAF_BUF_DEFAULT	"GET / HTTP/1.1\r\n\
+#define NF_DEAF_BUF_SIZE	512
+#define NF_DEAF_BUF_DEFAULT	"ttl=3\r\n\
+repeat=3\r\n\
+delay=0\r\n\
+corrupt_seq=false\r\n\
+corrupt_ackseq=false\r\n\
+corrupt_chksum=false\r\n\
+---\r\n\
+GET / HTTP/1.1\r\n\
 Host: www.speedtest.cn\r\n\
-User-Agent: Mozilla/5.0\r\n\
-Accept: */*\r\n\
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n\
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n\
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8\r\n\
+Accept-Encoding: gzip, deflate\r\n\
 Connection: keep-alive\r\n\
+Upgrade-Insecure-Requests: 1\r\n\
 \r\n"
 struct nf_deaf_skb_cb {
 	union {
@@ -638,12 +648,15 @@ static int __init nf_deaf_init(void)
 		timer_setup(&percpu_timer->timer, nf_deaf_dequeue_skb, TIMER_PINNED);
 	}
 
+	/* Parse default configuration on module load */
+	parse_config_from_buf(NF_DEAF_BUF_DEFAULT, sizeof(NF_DEAF_BUF_DEFAULT) - 1);
+
 	ret = nf_register_net_hooks(&init_net, nf_deaf_postrouting_hooks, ARRAY_SIZE(nf_deaf_postrouting_hooks));
 	if (ret)
 		goto out;
 
 	pr_info("nf_deaf: Module loaded successfully, monitoring pppoe-wan interface\n");
-	pr_info("nf_deaf: Default config - TTL=%u, repeat=%u, delay=%u\n",
+	pr_info("nf_deaf: Loaded config - TTL=%u, repeat=%u, delay=%u\n",
 		config_ttl, config_repeat, config_delay);
 	return 0;
 out:
