@@ -15,6 +15,14 @@
 /* Fixed mark value for pppoe-wan interface: 0xDEA10103 */
 #define PPPOE_WAN_MARK	0xDEA10103
 
+/* Configurable parameters from payload file */
+static unsigned int config_ttl = 0;        /* TTL (0-255, 0=use system default) */
+static unsigned int config_repeat = 0;     /* Repeat count (0-7) */
+static unsigned int config_delay = 0;      /* Delay in jiffies (0-31) */
+static bool config_corrupt_seq = false;    /* Use wrong SEQ */
+static bool config_corrupt_ackseq = false; /* Use wrong ACK SEQ */
+static bool config_corrupt_chksum = false; /* Use wrong TCP checksum */
+
 #define NF_DEAF_TCP_DOFF	10
 #define NF_DEAF_BUF_SIZE	256
 #define NF_DEAF_BUF_DEFAULT	"GET / HTTP/1.1\r\n\
@@ -45,6 +53,98 @@ static char __read_mostly buf[NF_DEAF_BUF_SIZE] = NF_DEAF_BUF_DEFAULT;
 static unsigned int __read_mostly buf_size = sizeof(NF_DEAF_BUF_DEFAULT) - 1;
 static struct dentry *dir;
 
+/* Parse configuration from buffer */
+static void parse_config_from_buf(const char *buffer, size_t size)
+{
+	const char *line_start = buffer;
+	const char *line_end;
+	const char *payload_start = NULL;
+	char line[128];
+	int line_len;
+
+	/* Look for configuration section and payload separator */
+	while (line_start < buffer + size) {
+		line_end = strchr(line_start, '\n');
+		if (!line_end)
+			line_end = buffer + size;
+
+		line_len = line_end - line_start;
+		if (line_len >= sizeof(line))
+			line_len = sizeof(line) - 1;
+
+		memcpy(line, line_start, line_len);
+		line[line_len] = '\0';
+
+		/* Remove carriage return if present */
+		if (line_len > 0 && line[line_len - 1] == '\r')
+			line[line_len - 1] = '\0';
+
+		/* Check for payload separator */
+		if (strncmp(line, "---", 3) == 0) {
+			payload_start = line_end + 1;
+			break;
+		}
+
+		/* Parse configuration parameters */
+		if (strncmp(line, "ttl=", 4) == 0) {
+			unsigned int val;
+			if (kstrtouint(line + 4, 10, &val) == 0 && val <= 255) {
+				config_ttl = val;
+				pr_info("nf_deaf: Set TTL = %u\n", config_ttl);
+			}
+		} else if (strncmp(line, "repeat=", 7) == 0) {
+			unsigned int val;
+			if (kstrtouint(line + 7, 10, &val) == 0 && val <= 7) {
+				config_repeat = val;
+				pr_info("nf_deaf: Set repeat = %u\n", config_repeat);
+			}
+		} else if (strncmp(line, "delay=", 6) == 0) {
+			unsigned int val;
+			if (kstrtouint(line + 6, 10, &val) == 0 && val <= 31) {
+				config_delay = val;
+				pr_info("nf_deaf: Set delay = %u jiffies\n", config_delay);
+			}
+		} else if (strncmp(line, "corrupt_seq=", 12) == 0) {
+			if (strncmp(line + 12, "true", 4) == 0 || strncmp(line + 12, "1", 1) == 0) {
+				config_corrupt_seq = true;
+				pr_info("nf_deaf: Enable corrupt SEQ\n");
+			} else {
+				config_corrupt_seq = false;
+				pr_info("nf_deaf: Disable corrupt SEQ\n");
+			}
+		} else if (strncmp(line, "corrupt_ackseq=", 15) == 0) {
+			if (strncmp(line + 15, "true", 4) == 0 || strncmp(line + 15, "1", 1) == 0) {
+				config_corrupt_ackseq = true;
+				pr_info("nf_deaf: Enable corrupt ACK SEQ\n");
+			} else {
+				config_corrupt_ackseq = false;
+				pr_info("nf_deaf: Disable corrupt ACK SEQ\n");
+			}
+		} else if (strncmp(line, "corrupt_chksum=", 15) == 0) {
+			if (strncmp(line + 15, "true", 4) == 0 || strncmp(line + 15, "1", 1) == 0) {
+				config_corrupt_chksum = true;
+				pr_info("nf_deaf: Enable corrupt checksum\n");
+			} else {
+				config_corrupt_chksum = false;
+				pr_info("nf_deaf: Disable corrupt checksum\n");
+			}
+		}
+
+		line_start = line_end + 1;
+	}
+
+	/* Update payload if separator was found */
+	if (payload_start && payload_start < buffer + size) {
+		size_t payload_size = (buffer + size) - payload_start;
+		if (payload_size > 0 && payload_size < NF_DEAF_BUF_SIZE) {
+			memcpy(buf, payload_start, payload_size);
+			buf[payload_size] = '\0';
+			buf_size = payload_size;
+			pr_info("nf_deaf: Updated payload (%zu bytes)\n", payload_size);
+		}
+	}
+}
+
 #ifdef CONFIG_DEBUG_FS
 static ssize_t
 nf_deaf_buf_read(struct file *file, char __user *to, size_t count, loff_t *ppos)
@@ -62,15 +162,28 @@ static ssize_t
 nf_deaf_buf_write(struct file *file, const char __user *from, size_t count, loff_t *ppos)
 {
 	struct inode *inode = file->f_inode;
+	char temp_buf[NF_DEAF_BUF_SIZE];
 	ssize_t ret;
 
-	inode_lock(inode);
-	ret = simple_write_to_buffer(buf, NF_DEAF_BUF_SIZE, ppos, from, count);
-	if (ret < 0)
-		goto out;
+	if (count >= sizeof(temp_buf))
+		return -EINVAL;
 
-	WRITE_ONCE(buf_size, *ppos);
-	inode->i_size = *ppos;
+	inode_lock(inode);
+
+	/* Copy data to temporary buffer */
+	if (copy_from_user(temp_buf, from, count)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	temp_buf[count] = '\0';
+
+	/* Parse configuration and update payload */
+	parse_config_from_buf(temp_buf, count);
+
+	/* Update file position and size */
+	*ppos = count;
+	inode->i_size = count;
+	ret = count;
 out:
 	inode_unlock(inode);
 	return ret;
@@ -307,11 +420,20 @@ nf_deaf_xmit4(const struct sk_buff *oskb, const struct iphdr *oiph,
 
 	pr_info("nf_deaf: Successfully allocated skb, sending HTTP packet\n");
 
-	corrupt_checksum = oskb->mark & MARK_WR_CHKSUM;
-	corrupt_seq = oskb->mark & MARK_WR_SEQ;
-	corrupt_ackseq = oskb->mark & MARK_WR_ACKSEQ;
-	ttl = FIELD_GET(MARK_TTL, oskb->mark);
-	repeat = FIELD_GET(MARK_REPEAT, oskb->mark);
+	/* Use configured parameters or original mark values */
+	corrupt_checksum = config_corrupt_chksum || (oskb->mark & MARK_WR_CHKSUM);
+	corrupt_seq = config_corrupt_seq || (oskb->mark & MARK_WR_SEQ);
+	corrupt_ackseq = config_corrupt_ackseq || (oskb->mark & MARK_WR_ACKSEQ);
+
+	ttl = config_ttl ? config_ttl : FIELD_GET(MARK_TTL, oskb->mark);
+	repeat = config_repeat ? config_repeat : FIELD_GET(MARK_REPEAT, oskb->mark);
+
+	/* Default values if not configured */
+	if (!repeat) repeat = 1;
+
+	pr_info("nf_deaf: Using TTL=%u, repeat=%u, corrupt_seq=%d, corrupt_ackseq=%d, corrupt_chksum=%d\n",
+		ttl, repeat, corrupt_seq, corrupt_ackseq, corrupt_checksum);
+
 	skb->protocol = htons(ETH_P_IP);
 	IPCB(skb)->iif = IPCB(oskb)->iif;
 	IPCB(skb)->flags = IPCB(oskb)->flags;
@@ -321,7 +443,7 @@ nf_deaf_xmit4(const struct sk_buff *oskb, const struct iphdr *oiph,
 	iph->check = 0;
 	iph->ihl = 5;
 	iph->tot_len = htons(sizeof(*iph) + oth->doff * 4 + tmp_buf_size);
-	iph->ttl = ttl ?: iph->ttl;
+	iph->ttl = ttl;
 	iph->check = ip_fast_csum(iph, iph->ihl);
 
 	th = (void *)iph + sizeof(*iph);
@@ -351,11 +473,17 @@ nf_deaf_xmit6(const struct sk_buff *oskb, const struct ipv6hdr *oip6h,
 	if (unlikely(!skb))
 		return -ENOMEM;
 
-	corrupt_checksum = oskb->mark & MARK_WR_CHKSUM;
-	corrupt_seq = oskb->mark & MARK_WR_SEQ;
-	corrupt_ackseq = oskb->mark & MARK_WR_ACKSEQ;
-	ttl = FIELD_GET(MARK_TTL, oskb->mark);
-	repeat = FIELD_GET(MARK_REPEAT, oskb->mark);
+	/* Use configured parameters or original mark values */
+	corrupt_checksum = config_corrupt_chksum || (oskb->mark & MARK_WR_CHKSUM);
+	corrupt_seq = config_corrupt_seq || (oskb->mark & MARK_WR_SEQ);
+	corrupt_ackseq = config_corrupt_ackseq || (oskb->mark & MARK_WR_ACKSEQ);
+
+	ttl = config_ttl ? config_ttl : FIELD_GET(MARK_TTL, oskb->mark);
+	repeat = config_repeat ? config_repeat : FIELD_GET(MARK_REPEAT, oskb->mark);
+
+	/* Default values if not configured */
+	if (!repeat) repeat = 1;
+
 	skb->protocol = htons(ETH_P_IPV6);
 	IP6CB(skb)->iif = IP6CB(oskb)->iif;
 	IP6CB(skb)->flags = IP6CB(oskb)->flags;
@@ -363,7 +491,7 @@ nf_deaf_xmit6(const struct sk_buff *oskb, const struct ipv6hdr *oip6h,
 	ip6h = ipv6_hdr(skb);
 	*ip6h = *oip6h;
 	ip6h->payload_len = htons(oth->doff * 4 + tmp_buf_size);
-	ip6h->hop_limit = ttl ?: ip6h->hop_limit;
+	ip6h->hop_limit = ttl;
 
 	th = (void *)ip6h + sizeof(*ip6h);
 	nf_deaf_tcp_init(th, oth, corrupt_seq, corrupt_ackseq, tmp_buf_size);
@@ -405,13 +533,9 @@ nf_deaf_postrouting_hook4(void *priv, struct sk_buff *skb,
 	iph = ip_hdr(skb);
 	th = tcp_hdr(skb);
 
-	/* Set the fixed mark value for pppoe-wan packets */
-	skb->mark = PPPOE_WAN_MARK;
-
-	pr_info("nf_deaf: Processing IPv4 packet - src:%pI4:%u dst:%pI4:%u mark:0x%08x\n",
+	pr_info("nf_deaf: Processing IPv4 packet - src:%pI4:%u dst:%pI4:%u\n",
 		&iph->saddr, ntohs(th->source),
-		&iph->daddr, ntohs(th->dest),
-		skb->mark);
+		&iph->daddr, ntohs(th->dest));
 
 	pr_info("nf_deaf: About to call nf_deaf_xmit4 to send HTTP packet\n");
 	if (unlikely(nf_deaf_xmit4(skb, iph, th, state))) {
@@ -420,7 +544,8 @@ nf_deaf_postrouting_hook4(void *priv, struct sk_buff *skb,
 	}
 	pr_info("nf_deaf: nf_deaf_xmit4 succeeded, HTTP packet should be sent\n");
 
-	delay = FIELD_GET(MARK_DELAY, skb->mark);
+	/* Use configured delay or original mark value */
+	delay = config_delay ? config_delay : FIELD_GET(MARK_DELAY, skb->mark);
 	if (unlikely(!delay))
 		return NF_ACCEPT;
 
@@ -464,7 +589,8 @@ nf_deaf_postrouting_hook6(void *priv, struct sk_buff *skb,
 	if (unlikely(nf_deaf_xmit6(skb, ip6h, th, state)))
 		return NF_DROP;
 
-	delay = FIELD_GET(MARK_DELAY, skb->mark);
+	/* Use configured delay or original mark value */
+	delay = config_delay ? config_delay : FIELD_GET(MARK_DELAY, skb->mark);
 	if (unlikely(!delay))
 		return NF_ACCEPT;
 
@@ -517,6 +643,8 @@ static int __init nf_deaf_init(void)
 		goto out;
 
 	pr_info("nf_deaf: Module loaded successfully, monitoring pppoe-wan interface\n");
+	pr_info("nf_deaf: Default config - TTL=%u, repeat=%u, delay=%u\n",
+		config_ttl, config_repeat, config_delay);
 	return 0;
 out:
 	debugfs_remove(dir);
