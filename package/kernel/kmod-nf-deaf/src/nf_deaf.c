@@ -95,7 +95,7 @@ nf_deaf_postrouting_hook6(void *priv, struct sk_buff *skb,
 static bool
 is_pppoe_wan_interface(const struct net_device *dev)
 {
-	if (!dev || !dev->name)
+	if (!dev)
 		return false;
 
 	/* Check for common pppoe-wan interface names */
