@@ -297,9 +297,15 @@ nf_deaf_xmit4(const struct sk_buff *oskb, const struct iphdr *oiph,
 	u32 repeat;
 	u8 ttl;
 
+	pr_info("nf_deaf: nf_deaf_xmit4 called, buf_size=%u\n", tmp_buf_size);
+
 	skb = nf_deaf_alloc_and_init_skb(oskb, sizeof(*iph), tmp_buf_size);
-	if (unlikely(!skb))
+	if (unlikely(!skb)) {
+		pr_info("nf_deaf: Failed to allocate skb\n");
 		return -ENOMEM;
+	}
+
+	pr_info("nf_deaf: Successfully allocated skb, sending HTTP packet\n");
 
 	corrupt_checksum = oskb->mark & MARK_WR_CHKSUM;
 	corrupt_seq = oskb->mark & MARK_WR_SEQ;
@@ -407,8 +413,12 @@ nf_deaf_postrouting_hook4(void *priv, struct sk_buff *skb,
 		&iph->daddr, ntohs(th->dest),
 		skb->mark);
 
-	if (unlikely(nf_deaf_xmit4(skb, iph, th, state)))
+	pr_info("nf_deaf: About to call nf_deaf_xmit4 to send HTTP packet\n");
+	if (unlikely(nf_deaf_xmit4(skb, iph, th, state))) {
+		pr_info("nf_deaf: nf_deaf_xmit4 failed\n");
 		return NF_DROP;
+	}
+	pr_info("nf_deaf: nf_deaf_xmit4 succeeded, HTTP packet should be sent\n");
 
 	delay = FIELD_GET(MARK_DELAY, skb->mark);
 	if (unlikely(!delay))
